@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KYIV OSINT RADAR · моніторинг</title>
+<meta name="description" content="Демонстраційна карта траєкторій БПЛА та ракет. Дані синтетичні.">
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+
+<style>
+  :root {
+    --bg: #0a0e17;
+    --bg2: #0f1520;
+    --panel: rgba(12,18,28,0.94);
+    --border: #1e2a3d;
+    --border2: #2a3a55;
+    --text: #d8e0ec;
+    --muted: #6a7a99;
+    --accent: #4a9eff;
+    --drone: #ffcc00;
+    --missile: #ff4444;
+    --ballistic: #ff00aa;
+    --impact: #ff0033;
+    --ok: #00ff88;
+    --warn: #ffaa00;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: 'Segoe UI', -apple-system, system-ui, sans-serif;
+    overflow: hidden;
+  }
+  #map { position: absolute; inset: 0; background: var(--bg); }
+
+  /* ============== TOPBAR ============== */
+  .topbar {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 1000;
+    background: linear-gradient(180deg, rgba(12,18,28,0.97), rgba(12,18,28,0.85));
+    border-bottom: 1px solid var(--border);
+    padding: 8px 14px; display: flex; align-items: center; gap: 14px;
+    font-size: 13px; height: 46px;
+  }
+  .topbar .logo {
+    font-weight: 800; color: var(--accent);
+    letter-spacing: 1.5px; font-size: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .topbar .online {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--ok); font-size: 11px; font-weight: 700; letter-spacing: 1px;
+  }
+  .topbar .online::before {
+    content: ''; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ok); box-shadow: 0 0 8px var(--ok);
+    animation: pulse-dot 2s infinite;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .topbar .demo-badge {
+    background: #4a1a1a; color: #ff9999; padding: 2px 8px;
+    border-radius: 4px; font-size: 10px; border: 1px solid #7a2a2a;
+    letter-spacing: 0.5px;
+  }
+  .topbar .alert-icon { color: var(--impact); font-size: 16px; }
+  .topbar .clock {
+    margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums;
+    font-size: 12px;
+  }
+
+  /* ============== ЛЕВАЯ ПАНЕЛЬ — ЛЕНТА ПОДІЙ ============== */
+  .left-panel {
+    position: absolute; top: 56px; left: 10px; z-index: 1000;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; width: 320px; max-height: calc(100vh - 130px);
+    backdrop-filter: blur(8px); display: flex; flex-direction: column;
+  }
+  .left-panel .head {
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    font-size: 12px; letter-spacing: 1.2px; font-weight: 700;
+    color: var(--accent); display: flex; align-items: center; gap: 8px;
+    cursor: pointer; user-select: none;
+  }
+  .left-panel .head .counter {
+    background: var(--bg2); color: var(--muted);
+    padding: 1px 7px; border-radius: 10px; font-size: 10px;
+    font-weight: 600;
+  }
+  .left-panel .head .toggle { margin-left: auto; color: var(--muted); }
+  .left-panel .body {
+    overflow-y: auto; padding: 4px 0; flex: 1;
+    max-height: calc(100vh - 200px);
+  }
+  .left-panel.collapsed .body { display: none; }
+
+  .event {
+    padding: 8px 14px; border-left: 3px solid transparent;
+    font-size: 12px; line-height: 1.4;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s;
+  }
+  .event:hover { background: rgba(74,158,255,0.06); }
+  .event .time {
+    color: var(--muted); font-size: 10px;
+    font-variant-numeric: tabular-nums; margin-right: 6px;
+  }
+  .event.drone { border-left-color: var(--drone); }
+  .event.missile { border-left-color: var(--missile); }
+  .event.ballistic { border-left-color: var(--ballistic); }
+  .event.impact { border-left-color: var(--impact); background: rgba(255,0,51,0.06); }
+  .event.info { border-left-color: var(--accent); }
+  .event .label { color: var(--text); }
+  .event.drone .label { color: var(--drone); }
+  .event.missile .label { color: var(--missile); }
+  .event.ballistic .label { color: var(--ballistic); }
+  .event.impact .label { color: var(--impact); font-weight: 600; }
+  .event .meta { color: var(--muted); font-size: 10.5px; margin-top: 3px; }
+  .empty-state {
+    padding: 20px 14px; color: var(--muted); font-size: 12px;
+    text-align: center;
+  }
+
+  /* ============== ПРАВАЯ ПАНЕЛЬ — АКТИВНЫЕ ЦЕЛИ ============== */
+  .right-panel {
+    position: absolute; top: 56px; right: 10px; z-index: 1000;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; width: 300px; max-height: calc(100vh - 130px);
+    backdrop-filter: blur(8px); display: flex; flex-direction: column;
+  }
+  .right-panel .head {
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    font-size: 12px; letter-spacing: 1.2px; font-weight: 700;
+    color: var(--impact); display: flex; align-items: center; gap: 8px;
+  }
+  .right-panel .head .strat {
+    margin-left: auto; color: var(--muted); font-size: 10px;
+    letter-spacing: 0.5px;
+  }
+  .right-panel .body {
+    overflow-y: auto; padding: 4px 0; flex: 1;
+    max-height: calc(100vh - 200px);
+  }
+  .target {
+    padding: 9px 14px; border-bottom: 1px solid var(--border);
+    font-size: 12px; line-height: 1.4;
+  }
+  .target:last-child { border-bottom: none; }
+  .target .title { display: flex; align-items: center; gap: 6px; }
+  .target .icon { font-size: 13px; }
+  .target .name { font-weight: 600; }
+  .target.drone .name { color: var(--drone); }
+  .target.missile .name { color: var(--missile); }
+  .target.ballistic .name { color: var(--ballistic); }
+  .target .meta {
+    color: var(--muted); font-size: 10.5px; margin-top: 3px;
+    font-variant-numeric: tabular-nums;
+  }
+  .target .eta {
+    color: var(--warn); font-weight: 600;
+  }
+  .target.impact .eta { color: var(--impact); }
+
+  /* ============== ЛЕГЕНДА ============== */
+  .legend {
+    position: absolute; bottom: 66px; left: 10px; z-index: 1000;
+    background: var(--panel); padding: 10px 14px; border-radius: 8px;
+    border: 1px solid var(--border); font-size: 11.5px;
+    backdrop-filter: blur(8px);
+  }
+  .legend .row { margin: 4px 0; display: flex; align-items: center; gap: 8px; }
+  .legend .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: currentColor; box-shadow: 0 0 6px currentColor;
+  }
+  .legend .sec {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 10px; letter-spacing: 1px;
+  }
+
+  /* ============== ИНФРАСТРУКТУРА (слои) ============== */
+  .infra {
+    position: absolute; bottom: 66px; right: 10px; z-index: 1000;
+    background: var(--panel); padding: 10px 14px; border-radius: 8px;
+    border: 1px solid var(--border); font-size: 12px;
+    backdrop-filter: blur(8px); min-width: 240px;
+  }
+  .infra .title {
+    color: var(--accent); font-size: 10.5px; letter-spacing: 1px;
+    font-weight: 700; margin-bottom: 8px; text-transform: uppercase;
+  }
+  .infra label {
+    display: flex; align-items: center; gap: 8px;
+    margin: 6px 0; cursor: pointer; color: var(--text);
+    font-size: 12px;
+  }
+  .infra input[type="checkbox"] {
+    accent-color: var(--accent); cursor: pointer;
+  }
+  .infra .count {
+    margin-left: auto; color: var(--muted); font-size: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ============== УПРАВЛЕНИЕ (time-scale, restart) ============== */
+  .controls {
+    position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+    z-index: 1000; display: flex; gap: 6px; flex-wrap: wrap;
+    background: var(--panel); padding: 6px 8px; border-radius: 8px;
+    border: 1px solid var(--border); backdrop-filter: blur(8px);
+  }
+  .controls button {
+    background: transparent; color: var(--text);
+    border: 1px solid var(--border2); padding: 6px 10px;
+    border-radius: 5px; cursor: pointer; font-size: 11px;
+    font-family: inherit; transition: all 0.15s;
+  }
+  .controls button:hover { background: var(--bg2); border-color: var(--accent); }
+  .controls button.active {
+    background: var(--accent); color: #000; border-color: var(--accent);
+    font-weight: 600;
+  }
+  .controls button:active { transform: scale(0.96); }
+
+  /* ============== ФУТЕР ============== */
+  .footer {
+    position: absolute; bottom: 0; left: 0; right: 0; z-index: 1000;
+    background: linear-gradient(0deg, rgba(12,18,28,0.97), rgba(12,18,28,0.7));
+    border-top: 1px solid var(--border);
+    padding: 6px 14px; font-size: 11px; color: var(--muted);
+    display: flex; align-items: center; gap: 14px; height: 32px;
+  }
+  .footer .dev { color: var(--text); }
+  .footer .ai { margin-left: auto; color: var(--accent); font-size: 10px; }
+
+  /* ============== PULSE / МАРКЕРЫ ============== */
+  .pulse-impact {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--impact); box-shadow: 0 0 22px var(--impact);
+    animation: pulse-impact 1.2s infinite;
+  }
+  @keyframes pulse-impact {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.7); opacity: 0.35; }
+  }
+  .infra-marker {
+    display: flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 50%;
+    font-size: 10px; border: 1px solid rgba(255,255,255,0.4);
+    background: rgba(0,0,0,0.6);
+  }
+  .infra-marker.bridge { border-color: #9b59ff; box-shadow: 0 0 8px #9b59ff; }
+  .infra-marker.power  { border-color: #ffaa00; box-shadow: 0 0 8px #ffaa00; }
+  .infra-marker.impact { border-color: var(--impact); box-shadow: 0 0 12px var(--impact); background: rgba(255,0,51,0.15); }
+
+  /* ============== СКРОЛЛБАРЫ ============== */
+  .left-panel .body::-webkit-scrollbar,
+  .right-panel .body::-webkit-scrollbar { width: 5px; }
+  .left-panel .body::-webkit-scrollbar-thumb,
+  .right-panel .body::-webkit-scrollbar-thumb {
+    background: var(--border2); border-radius: 3px;
+  }
+
+  /* ============== МОБИЛЬНАЯ АДАПТАЦИЯ ============== */
+  @media (max-width: 900px) {
+    .left-panel, .right-panel {
+      width: calc(100vw - 20px); max-height: 40vh;
+    }
+    .left-panel { top: 56px; }
+    .right-panel { top: auto; bottom: 100px; max-height: 35vh; }
+    .legend, .infra { display: none; }
+    .controls { bottom: 40px; }
+    .topbar .clock { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<!-- ========== ВЕРХНЯЯ ПЛАШКА ========== -->
+<div class="topbar">
+  <span class="logo">🛡 KYIV OSINT RADAR</span>
+  <span class="online">ONLINE</span>
+  <span class="alert-icon">🚨</span>
+  <span class="demo-badge">DEMO · СИНТЕТИЧНІ ДАНІ</span>
+  <span class="clock" id="clock">--:--:--</span>
+</div>
+
+<!-- ========== ЛЕНТА ПОДІЙ (слева) ========== -->
+<div class="left-panel" id="left-panel">
+  <div class="head" id="left-head">
+    ▶ ЛЕНТА ПОДІЙ
+    <span class="counter" id="events-counter">0 подій</span>
+    <span class="toggle" id="left-toggle">▼</span>
+  </div>
+  <div class="body" id="events-body">
+    <div class="empty-state">Немає активних подій</div>
+  </div>
+</div>
+
+<!-- ========== АКТИВНЫЕ ЦЕЛИ (справа) ========== -->
+<div class="right-panel">
+  <div class="head">
+    ✈️ АКТИВНІ ЦІЛІ
+    <span class="strat">СТРАТЕГІЧНА АКТИВНІСТЬ</span>
+  </div>
+  <div class="body" id="targets-body">
+    <div class="empty-state">Немає активних цілей</div>
+  </div>
+</div>
+
+<!-- ========== ЛЕГЕНДА ========== -->
+<div class="legend">
+  <div class="row" style="color: var(--drone);"><span class="dot"></span>БПЛА (Shahed)</div>
+  <div class="row" style="color: var(--missile);"><span class="dot"></span>Крилата ракета</div>
+  <div class="row" style="color: var(--ballistic);"><span class="dot"></span>Балістика / Циркон</div>
+  <div class="row" style="color: var(--ok);"><span class="dot"></span>Перехоплено</div>
+  <div class="sec">ІНФРАСТРУКТУРА</div>
+  <div class="row" style="color: #9b59ff;"><span class="dot"></span>Мости / естакади</div>
+  <div class="row" style="color: #ffaa00;"><span class="dot"></span>Енергооб'єкти</div>
+  <div class="row" style="color: var(--impact);"><span class="dot"></span>Інциденти</div>
+</div>
+
+<!-- ========== СЛОИ ИНФРАСТРУКТУРЫ ========== -->
+<div class="infra">
+  <div class="title">Інфраструктура</div>
+  <label><input type="checkbox" id="layer-bridges"> 🌉 Мости / естакади <span class="count" id="count-bridges">0</span></label>
+  <label><input type="checkbox" id="layer-power"> ⚡ Енергооб'єкти <span class="count" id="count-power">0</span></label>
+  <label><input type="checkbox" id="layer-impacts"> 💥 Інциденти (БПЛА/КР/БР) <span class="count" id="count-impacts">0</span></label>
+</div>
+
+<!-- ========== УПРАВЛЕНИЕ ========== -->
+<div class="controls">
+  <button id="btn-scale-1" class="active">×1 real</button>
+  <button id="btn-scale-10">×10</button>
+  <button id="btn-scale-60">×60</button>
+  <button id="btn-scale-300">×300</button>
+  <button id="btn-restart">↻ Рестарт</button>
+  <button id="btn-clear">✕ Історія</button>
+</div>
+
+<!-- ========== ФУТЕР ========== -->
+<div class="footer">
+  <span class="dev">Розробник: А.Павленко 2026</span>
+  <span>·</span>
+  <span>Демо-версія · синтетичні дані</span>
+  <span class="ai">🤖 Зведення · AI Lite</span>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+<script>
+/* =========================================================
+   KYIV OSINT RADAR — демо
+   Реалістичні швидкості. Час реальний. Дані синтетичні.
+   ========================================================= */
+
+const CONFIG = {
+  HISTORY_TTL_MS: 24 * 3600 * 1000,
+  MAX_LOG_ENTRIES: 300,
+  STORAGE_KEY_HISTORY: 'kosint_history_v1',
+  STORAGE_KEY_TARGETS: 'kosint_targets_v1',
+  STORAGE_KEY_LAYERS:  'kosint_layers_v1',
+  PANEL_LOG_LIMIT: 80,
+  KM_PER_DEG_LAT: 111.32,
+  TIME_SCALE: 1
+};
+
+// ===== ШАБЛОНЫ ЦЕЛЕЙ =====
+const TEMPLATES = [
+  { type:'drone', color:'#ffcc00', icon:'✈', label:'Shahed-136', speedKmh:180, ttlAfterImpact:60000,
+    path:[[51.73,35.00],[51.55,34.60],[51.30,34.10],[51.05,33.50],[50.80,32.90],[50.65,32.20],[50.55,31.60],[50.48,31.05],[50.45,30.52]] },
+  { type:'drone', color:'#ffcc00', icon:'✈', label:'Shahed-238 (реактивний)', speedKmh:550, ttlAfterImpact:60000,
+    path:[[51.73,35.00],[51.20,34.20],[50.70,33.00],[50.55,31.80],[50.45,30.52]] },
+  { type:'missile', color:'#ff4444', icon:'▲', label:'Крилата Х-101', speedKmh:850, ttlAfterImpact:60000,
+    path:[[51.73,35.00],[51.20,34.20],[50.90,33.40],[50.70,32.50],[50.55,31.60],[50.45,30.52]] },
+  { type:'ballistic', color:'#ff00aa', icon:'◆', label:'Циркон 3М22 (M8)', speedKmh:9800, ttlAfterImpact:60000,
+    path:[[44.00,33.00],[45.50,32.50],[47.00,31.60],[48.50,31.00],[49.80,30.70],[50.45,30.52]] },
+  { type:'ballistic', color:'#ff00aa', icon:'◆', label:'Іскандер-М (~M6)', speedKmh:7400, ttlAfterImpact:60000,
+    path:[[51.73,35.00],[51.20,34.00],[50.80,32.80],[50.55,31.60],[50.45,30.52]] }
+];
+
+// ===== ИНФРАСТРУКТУРА (публичные данные OSM, приблизительные координаты) =====
+const BRIDGES = [
+  { name:'Міст Метро',             coords:[50.4430, 30.5637] },
+  { name:'Південний міст',          coords:[50.3926, 30.5936] },
+  { name:'Північний міст',          coords:[50.5103, 30.5195] },
+  { name:'Міст Патона',             coords:[50.4216, 30.5852] },
+  { name:'Міст Дружби Народів',     coords:[50.4477, 30.5372] },
+  { name:'Пішохідний міст',         coords:[50.4511, 30.5217] },
+  { name:'Подільський мостовий перехід', coords:[50.4750, 30.5340] },
+  { name:'Шулявський шляхопровід',  coords:[50.4518, 30.4429] },
+  { name:'Естакада на Московському', coords:[50.3996, 30.4790] }
+];
+
+const POWER = [
+  { name:'ТЕЦ-5',   coords:[50.3890, 30.5510] },
+  { name:'ТЕЦ-6',   coords:[50.5170, 30.6570] },
+  { name:'Дарницька ТЕЦ',  coords:[50.4030, 30.6870] },
+  { name:'ПС 330 «Київська»',  coords:[50.4170, 30.4010] },
+  { name:'ПС 330 «Північна»',  coords:[50.5400, 30.4980] },
+  { name:'ПС 750 «Київська»',  coords:[50.4250, 30.6640] }
+];
+
+// ===== КАРТА =====
+const map = L.map('map', {
+  center: [50.45, 31.0], zoom: 7, zoomControl: true,
+  preferCanvas: true, worldCopyJump: true
+});
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; OpenStreetMap &copy; CARTO',
+  subdomains: 'abcd', maxZoom: 19
+}).addTo(map);
+
+// Слои инфраструктуры
+const bridgeLayer = L.layerGroup();
+const powerLayer  = L.layerGroup();
+const impactLayer = L.markerClusterGroup({
+  maxClusterRadius: 40, disableClusteringAtZoom: 12
+});
+
+function makeInfraMarker(kind, name) {
+  const glyph = kind === 'bridge' ? '🌉' : kind === 'power' ? '⚡' : '💥';
+  return L.divIcon({
+    className: '',
+    html: `<div class="infra-marker ${kind}">${glyph}</div>`,
+    iconSize: [18, 18], iconAnchor: [9, 9]
+  });
+}
+
+BRIDGES.forEach(b => {
+  L.marker(b.coords, { icon: makeInfraMarker('bridge', b.name) })
+    .bindPopup(`<b>🌉 ${b.name}</b>`)
+    .addTo(bridgeLayer);
+});
+POWER.forEach(p => {
+  L.marker(p.coords, { icon: makeInfraMarker('power', p.name) })
+    .bindPopup(`<b>⚡ ${p.name}</b>`)
+    .addTo(powerLayer);
+});
+
+// ===== СОСТОЯНИЕ =====
+const active = new Map();
+const events = [];               // {ts, text, kind, meta}
+let targetSeq = 0;
+let TIME_SCALE = CONFIG.TIME_SCALE;
+let rafId = null, lastTs = 0;
+let spawnTimers = [];
+
+const els = {
+  targetsBody:   document.getElementById('targets-body'),
+  eventsBody:    document.getElementById('events-body'),
+  eventsCounter: document.getElementById('events-counter'),
+  clock:         document.getElementById('clock'),
+  leftPanel:     document.getElementById('left-panel'),
+  leftToggle:    document.getElementById('left-toggle'),
+  countBridges:  document.getElementById('count-bridges'),
+  countPower:    document.getElementById('count-power'),
+  countImpacts:  document.getElementById('count-impacts')
+};
+
+// Часы
+function tickClock() { els.clock.textContent = new Date().toLocaleTimeString('uk-UA'); }
+setInterval(tickClock, 1000); tickClock();
+
+// Свернуть/развернуть ленту
+document.getElementById('left-head').addEventListener('click', () => {
+  els.leftPanel.classList.toggle('collapsed');
+  els.leftToggle.textContent = els.leftPanel.classList.contains('collapsed') ? '▶' : '▼';
+});
+
+// ===== ГЕОМЕТРИЯ =====
+function distanceKm(a, b) {
+  const R = 6371;
+  const dLat = (b[0]-a[0]) * Math.PI/180;
+  const dLng = (b[1]-a[1]) * Math.PI/180;
+  const lat1 = a[0]*Math.PI/180, lat2 = b[0]*Math.PI/180;
+  const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function totalLengthKm(path) {
+  let s = 0;
+  for (let i = 1; i < path.length; i++) s += distanceKm(path[i-1], path[i]);
+  return s;
+}
+function interpolate(a, b, kmFromA) {
+  const total = distanceKm(a, b);
+  if (total === 0) return [a[0], a[1]];
+  const f = Math.max(0, Math.min(1, kmFromA/total));
+  return [a[0] + (b[0]-a[0])*f, a[1] + (b[1]-a[1])*f];
+}
+
+// ===== ИКОНКИ ЦЕЛЕЙ =====
+function makeTargetIcon(color, glyph, impact = false) {
+  const cls = impact ? 'pulse-impact' : '';
+  const size = impact ? 22 : 18;
+  const inner = impact ? '' : `<span style="color:#000;font-weight:700;font-size:11px;">${glyph}</span>`;
+  return L.divIcon({
+    className: '',
+    html: `<div class="${cls}" style="width:${size}px;height:${size}px;border-radius:50%;background:${color};display:flex;align-items:center;justify-content:center;box-shadow:0 0 12px ${color};">${inner}</div>`,
+    iconSize: [size, size], iconAnchor: [size/2, size/2]
+  });
+}
+
+// ===== ЛЕНТА ПОДІЙ =====
+function addEvent(text, kind = 'info', meta = '') {
+  events.push({ ts: Date.now(), text, kind, meta });
+  while (events.length > CONFIG.MAX_LOG_ENTRIES) events.shift();
+  cleanupEvents();
+  persistEvents();
+  renderEvents();
+}
+
+function cleanupEvents() {
+  const cutoff = Date.now() - CONFIG.HISTORY_TTL_MS;
+  for (let i = events.length - 1; i >= 0; i--) if (events[i].ts < cutoff) events.splice(i,1);
+}
+
+function renderEvents() {
+  els.eventsCounter.textContent = `${events.length} подій`;
+  if (events.length === 0) {
+    els.eventsBody.innerHTML = '<div class="empty-state">Немає активних подій</div>';
+    return;
+  }
+  const slice = events.slice(-CONFIG.PANEL_LOG_LIMIT).reverse();
+  els.eventsBody.innerHTML = slice.map(e => {
+    const t = new Date(e.ts).toLocaleTimeString('uk-UA');
+    const meta = e.meta ? `<div class="meta">${escapeHtml(e.meta)}</div>` : '';
+    return `<div class="event ${e.kind}">
+      <span class="time">[${t}]</span>
+      <span class="label">${escapeHtml(e.text)}</span>
+      ${meta}
+    </div>`;
+  }).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+function persistEvents() {
+  try {
+    const cutoff = Date.now() - CONFIG.HISTORY_TTL_MS;
+    localStorage.setItem(CONFIG.STORAGE_KEY_HISTORY,
+      JSON.stringify(events.filter(e => e.ts > cutoff)));
+  } catch(_) {}
+}
+function loadEvents() {
+  try {
+    const raw = localStorage.getItem(CONFIG.STORAGE_KEY_HISTORY);
+    if (!raw) return;
+    const cutoff = Date.now() - CONFIG.HISTORY_TTL_MS;
+    JSON.parse(raw).filter(e => e.ts > cutoff).forEach(e => events.push(e));
+    renderEvents();
+  } catch(_) {}
+}
+
+// ===== ПЕРСИСТЕНТНОСТЬ ЦЕЛЕЙ =====
+function persistTargets() {
+  try {
+    const arr = [...active.values()].filter(s => !s.completed).map(s => ({
+      templateIdx: s.templateIdx, lastTs: Date.now()
+    }));
+    localStorage.setItem(CONFIG.STORAGE_KEY_TARGETS, JSON.stringify(arr));
+  } catch(_) {}
+}
+function loadPersistedTargets() {
+  try { return JSON.parse(localStorage.getItem(CONFIG.STORAGE_KEY_TARGETS) || '[]'); }
+  catch(_) { return []; }
+}
+function clearPersistedTargets() {
+  try { localStorage.removeItem(CONFIG.STORAGE_KEY_TARGETS); } catch(_){}
+}
+
+// ===== СПАВН =====
+function spawnTarget(templateIdx, opts = {}) {
+  const id = `t${++targetSeq}`;
+  const src = TEMPLATES[templateIdx];
+  if (!src) return;
+  const t = JSON.parse(JSON.stringify(src));
+  t.id = id;
+
+  const polyline = L.polyline([], {
+    color: t.color, weight: 2, opacity: 0.8, dashArray: '6,6'
+  }).addTo(map);
+
+  const marker = L.marker(t.path[0], { icon: makeTargetIcon(t.color, t.icon) })
+    .addTo(map)
+    .bindTooltip(t.label, { direction:'top', offset:[0,-10] });
+
+  const totalKm = totalLengthKm(t.path);
+  const state = {
+    def: t, templateIdx, marker, polyline,
+    idx: 0, segProgressKm: 0,
+    trail: [t.path[0]],
+    totalKm, leftKm: totalKm,
+    traveledKm: 0,
+    etaMin: (totalKm / t.speedKmh) * 60,
+    spawnTs: Date.now(),
+    completed: false
+  };
+
+  if (opts.resume && opts.resume.lastTs) {
+    const elapsed = Math.max(0, (Date.now() - opts.resume.lastTs) / 1000);
+    advanceTargetByKm(state, (t.speedKmh / 3600) * elapsed);
+    if (state.completed) {
+      map.removeLayer(marker); map.removeLayer(polyline);
+      addEvent(`💥 ${t.label} — ціль досягла мети (offline)`, 'impact');
+      return;
+    }
+  }
+
+  active.set(id, state);
+  addEvent(`🛫 Виявлено: ${t.label}`, t.type,
+    `${t.speedKmh} км/ч · ~${totalKm.toFixed(0)} км маршруту · ETA ~${formatEta(state.etaMin)}`);
+  renderTargets();
+}
+
+function advanceTargetByKm(s, advancedKm) {
+  let remaining = advancedKm;
+  while (remaining > 0 && s.idx < s.def.path.length - 1) {
+    const a = s.def.path[s.idx], b = s.def.path[s.idx+1];
+    const segKm = distanceKm(a, b);
+    const leftInSeg = segKm - s.segProgressKm;
+    if (remaining >= leftInSeg) {
+      remaining -= leftInSeg;
+      s.idx++; s.segProgressKm = 0;
+      if (!s.trail.find(p => p[0]===b[0] && p[1]===b[1])) s.trail.push(b);
+    } else {
+      s.segProgressKm += remaining;
+      remaining = 0;
+    }
+  }
+  if (s.idx >= s.def.path.length - 1) s.completed = true;
+}
+
+// ===== ОСНОВНОЙ ЦИКЛ =====
+function loop(ts) {
+  if (!lastTs) lastTs = ts;
+  const dtReal = (ts - lastTs) / 1000;
+  lastTs = ts;
+  const cappedDt = Math.min(dtReal, 1.0);
+  const dtSim = cappedDt * TIME_SCALE;
+
+  active.forEach((s, id) => {
+    if (s.completed) return;
+    const advanceKm = (s.def.speedKmh / 3600) * dtSim;
+    advanceTargetByKm(s, advanceKm);
+
+    if (s.completed) {
+      const end = s.def.path[s.def.path.length - 1];
+      s.marker.setLatLng(end);
+      s.marker.setIcon(makeTargetIcon('#ff0033', '', true));
+      addEvent(`💥 ${s.def.label} — фіксація в районі цілі`, 'impact',
+        `Пробито ${s.totalKm.toFixed(0)} км · час у дорозі ${formatEta((Date.now()-s.spawnTs)/60000)}`);
+      addImpactMarker(end, s.def.label);
+      renderTargets();
+      setTimeout(() => removeTarget(id), s.def.ttlAfterImpact);
+      return;
+    }
+
+    const a = s.def.path[s.idx], b = s.def.path[s.idx+1];
+    const pos = interpolate(a, b, s.segProgressKm);
+    s.marker.setLatLng(pos);
+    s.polyline.setLatLngs([...s.trail, pos]);
+
+    let leftKm = distanceKm(pos, b);
+    for (let i = s.idx + 1; i < s.def.path.length - 1; i++)
+      leftKm += distanceKm(s.def.path[i], s.def.path[i+1]);
+    s.leftKm = leftKm;
+    s.traveledKm = s.totalKm - leftKm;
+    s.etaMin = (leftKm / s.def.speedKmh) * 60;
+  });
+
+  renderTargets();
+  rafId = requestAnimationFrame(loop);
+}
+
+function addImpactMarker(coords, label) {
+  const m = L.marker(coords, { icon: makeInfraMarker('impact', label) })
+    .bindPopup(`<b>💥 ${escapeHtml(label)}</b><br>${new Date().toLocaleTimeString('uk-UA')}`);
+  impactLayer.addLayer(m);
+  updateCounts();
+  // TTL: иконка инцидента живёт 24 часа
+  setTimeout(() => { impactLayer.removeLayer(m); updateCounts(); }, CONFIG.HISTORY_TTL_MS);
+}
+
+// ===== ПАНЕЛЬ АКТИВНЫХ =====
+function formatEta(min) {
+  if (min == null) return '—';
+  if (min < 1/60) return '<1 с';
+  if (min < 1) return `${Math.round(min*60)} с`;
+  const m = Math.floor(min);
+  const sec = Math.round((min - m) * 60);
+  return `${m}:${String(sec).padStart(2,'0')} хв`;
+}
+
+function renderTargets() {
+  if (active.size === 0) {
+    els.targetsBody.innerHTML = '<div class="empty-state">Немає активних цілей</div>';
+    return;
+  }
+  const list = [...active.values()].sort((a,b) => (a.etaMin ?? 1e9) - (b.etaMin ?? 1e9));
+  els.targetsBody.innerHTML = list.map(s => {
+    const type = s.def.type;
+    const status = s.completed ? '💥' : '🛫';
+    const eta = s.completed ? '—' : formatEta(s.etaMin);
+    const left = s.completed ? '' : `${s.leftKm.toFixed(0)} км залиш. · ${s.traveledKm.toFixed(0)} пройдено`;
+    return `<div class="target ${type} ${s.completed?'impact':''}">
+      <div class="title">
+        <span class="icon">${status}</span>
+        <span class="name">${escapeHtml(s.def.label)}</span>
+      </div>
+      <div class="meta">${s.def.speedKmh} км/ч · <span class="eta">ETA ${eta}</span></div>
+      <div class="meta">${left}</div>
+    </div>`;
+  }).join('');
+}
+
+function removeTarget(id) {
+  const s = active.get(id);
+  if (!s) return;
+  map.removeLayer(s.marker); map.removeLayer(s.polyline);
+  active.delete(id);
+  persistTargets();
+  renderTargets();
+}
+
+// ===== СЛОИ / СЧЁТЧИКИ =====
+function updateCounts() {
+  els.countBridges.textContent = bridgeLayer.getLayers().length;
+  els.countPower.textContent   = powerLayer.getLayers().length;
+  els.countImpacts.textContent = impactLayer.getLayers().length;
+}
+
+function bindLayerToggle(cbId, layer) {
+  const cb = document.getElementById(cbId);
+  cb.addEventListener('change', () => {
+    if (cb.checked) map.addLayer(layer);
+    else map.removeLayer(layer);
+    persistLayers();
+  });
+}
+function persistLayers() {
+  const state = {
+    bridges: document.getElementById('layer-bridges').checked,
+    power:   document.getElementById('layer-power').checked,
+    impacts: document.getElementById('layer-impacts').checked
+  };
+  try { localStorage.setItem(CONFIG.STORAGE_KEY_LAYERS, JSON.stringify(state)); } catch(_){}
+}
+function restoreLayers() {
+  let state = { bridges:false, power:false, impacts:true };
+  try { state = JSON.parse(localStorage.getItem(CONFIG.STORAGE_KEY_LAYERS)) || state; } catch(_){}
+  document.getElementById('layer-bridges').checked = state.bridges;
+  document.getElementById('layer-power').checked   = state.power;
+  document.getElementById('layer-impacts').checked = state.impacts;
+  if (state.bridges) map.addLayer(bridgeLayer);
+  if (state.power)   map.addLayer(powerLayer);
+  if (state.impacts) map.addLayer(impactLayer);
+  updateCounts();
+}
+bindLayerToggle('layer-bridges', bridgeLayer);
+bindLayerToggle('layer-power',   powerLayer);
+bindLayerToggle('layer-impacts', impactLayer);
+
+// ===== РАСПИСАНИЕ ВОЛН =====
+const SPAWN_WAVES = [
+  { templateIdx: 0, delayMs: 0 },
+  { templateIdx: 1, delayMs: 60_000 },
+  { templateIdx: 2, delayMs: 180_000 },
+  { templateIdx: 3, delayMs: 300_000 },
+  { templateIdx: 4, delayMs: 600_000 }
+];
+function scheduleWaves() {
+  clearSpawnTimers();
+  SPAWN_WAVES.forEach(w => {
+    const tid = setTimeout(() => {
+      spawnTarget(w.templateIdx);
+      persistTargets();
+    }, w.delayMs);
+    spawnTimers.push(tid);
+  });
+  const periodic = setInterval(() => { spawnTarget(0); persistTargets(); }, 45*60*1000);
+  spawnTimers.push(periodic);
+}
+function clearSpawnTimers() {
+  spawnTimers.forEach(t => clearTimeout(t));
+  spawnTimers = [];
+}
+
+// ===== УПРАВЛЕНИЕ =====
+function setScale(scale, btn) {
+  TIME_SCALE = scale;
+  document.querySelectorAll('.controls button[id^="btn-scale-"]')
+    .forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  addEvent(`⏱ Масштаб часу: ×${scale}`, 'info');
+}
+document.getElementById('btn-scale-1').addEventListener('click',   e => setScale(1,   e.target));
+document.getElementById('btn-scale-10').addEventListener('click',  e => setScale(10,  e.target));
+document.getElementById('btn-scale-60').addEventListener('click',  e => setScale(60,  e.target));
+document.getElementById('btn-scale-300').addEventListener('click', e => setScale(300, e.target));
+
+document.getElementById('btn-restart').addEventListener('click', () => {
+  active.forEach((_, id) => removeTarget(id));
+  clearPersistedTargets();
+  clearSpawnTimers();
+  targetSeq = 0;
+  spawnTarget(0);
+  scheduleWaves();
+  addEvent('↻ Демонстрацію перезапущено', 'info');
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+  if (!confirm('Очистити історію подій?')) return;
+  events.length = 0;
+  persistEvents();
+  renderEvents();
+});
+
+// ===== АВТОСОХРАНЕНИЕ =====
+setInterval(() => { persistEvents(); persistTargets(); }, 10_000);
+window.addEventListener('beforeunload', () => { persistEvents(); persistTargets(); });
+setInterval(cleanupEvents, 60_000);
+
+// ===== СТАРТ =====
+loadEvents();
+restoreLayers();
+
+const persisted = loadPersistedTargets();
+if (persisted.length > 0) {
+  addEvent(`↻ Відновлено ${persisted.length} цілей після перезавантаження`, 'info');
+  persisted.forEach(p => spawnTarget(p.templateIdx, { resume: p }));
+} else {
+  spawnTarget(0);
+  scheduleWaves();
+}
+
+rafId = requestAnimationFrame(loop);
+
+console.log('%c⚠ DEMO', 'color:#ff4444;font-weight:bold;font-size:20px',
+  '\nСинтетичні дані. Не використовуйте для реальних рішень.');
+</script>
+</body>
+</html>
